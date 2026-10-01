@@ -29,12 +29,13 @@
 #'
 #' The use of a mutual reachability distance (\eqn{M>1}; Campello et al., 2013)
 #' pulls peripheral points farther away from each other.
-#' This way, Lumbermark gives an alternative to the HDBSCAN* algorithm
-#' that is able to detect a predefined number of clusters and indicate
-#' outliers (via \pkg{deadwood}; see Gagolewski, 2026).
 #'
 #'
 #' @details
+#' Lumbermark is a viable alternative to the HDBSCAN* algorithm
+#' that is able to detect a predefined number of clusters and indicate
+#' outliers (via \pkg{deadwood}; see Gagolewski, 2026).
+#'
 #' As with all distance-based methods (this includes k-means and DBSCAN as well),
 #' applying data preprocessing and feature engineering techniques
 #' (e.g., feature scaling, feature selection, dimensionality reduction)
@@ -47,8 +48,9 @@
 #' spaces; see \code{\link[quitefastmst]{mst_euclid}} from
 #' the \pkg{quitefastmst} package.
 #'
-#' Once a minimum spanning tree is determined, the Lumbermark algorithm runs in
-#' \eqn{O(kn)} time.  If you want to test different parameters or \eqn{k}s,
+#' Once a minimum spanning tree with increasingly sorted edge weights
+#' is determined, the Lumbermark algorithm runs in \eqn{O(kn)} time.
+#' If you want to test different parameters or \eqn{k}s,
 #' it is best to compute the MST explicitly beforehand.
 #'
 #'
@@ -57,14 +59,23 @@
 #'     object of class \code{dist} (see \code{\link[stats]{dist}}),
 #'     or an object of class \code{mst} (see \code{\link[deadwood]{mst}})
 #'
-#' @param min_cluster_size integer;
-#'     minimal cluster size
+#' @param min_cluster_size integer; minimal cluster size; used as a safeguard
+#'     for small \code{n} and large \code{k}
 #'
 #' @param min_cluster_factor numeric value in (0,1); output cluster sizes will
-#'     not be smaller than \code{min_cluster_factor*n/k}
+#'     not be smaller than \code{min_cluster_factor*n/k} (excluding leaves if
+#'     \code{skip_leaves} is requested)
 #'
 #' @param skip_leaves logical; whether the MST leaves should be omitted
 #'     from cluster size counting
+#'
+#' @param nested if TRUE, generating \eqn{l} clusters in the \eqn{(l-1)}-th
+#'     iteration uses the \code{min_cluster_factor*n/l} size bound; this way,
+#'     the consecutively generated partitions are not dependent on the
+#'     initial \code{k} and are thus properly nested. On the other hand, if
+#'     \code{nested} is FALSE, then all clusters are of
+#'     size at least \code{min_cluster_factor*n/k};
+#'     this is somewhat faster to compute.
 #'
 #' @param distance metric used to compute the linkage, one of:
 #'     \code{"euclidean"} (synonym: \code{"l2"}),
@@ -84,8 +95,8 @@
 #'
 #' @return
 #' \code{lumbermark()} returns an object of class \code{mstclust}, which defines
-#' a \eqn{k}-partition, i.e., a vector whose \eqn{i}-th element denotes
-#' the \eqn{i}-th input point's cluster label between 1 and \eqn{k}.
+#' a \eqn{k}-partition of a given dataset, i.e., a vector whose \eqn{i}-th
+#' element denotes the \eqn{i}-th input point's cluster label between 1 and \eqn{k}.
 #'
 #' The \code{mst} attribute gives the computed minimum
 #' spanning tree which can be reused in further calls to the functions
@@ -101,7 +112,8 @@
 #'
 #'
 #' @references
-#' M. Gagolewski, lumbermark, in preparation, 2026
+#' M. Gagolewski, Lumbermark: Resistant clustering by chopping up mutual
+#' reachability minimum spanning trees, 2026, \doi{10.48550/arXiv.2604.07143}
 #'
 #' R.J.G.B. Campello, D. Moulavi, J. Sander,
 #' Density-based clustering based on hierarchical density estimates,
@@ -126,7 +138,7 @@
 #' y_test <- as.integer(iris[,5])
 #' plot(X, col=y_pred, pch=y_test, asp=1, las=1)
 #'
-#' # detect 3 clusters and find outliers with Deadwood
+#' # detect three clusters and find outliers with Deadwood
 #' library("deadwood")
 #' y_pred2 <- lumbermark(X, k=3)
 #' plot(X, col=y_pred2, asp=1, las=1)
@@ -147,10 +159,11 @@ lumbermark <- function(d, ...)
 lumbermark.default <- function(
     d,
     k,
-    min_cluster_size=10,
     min_cluster_factor=0.25,
-    skip_leaves=(M>0L),
     M=5L,
+    nested=TRUE,
+    skip_leaves=(M>0L),
+    min_cluster_size=10,
     distance=c("euclidean", "l2", "manhattan", "cityblock", "l1", "cosine"),
     verbose=FALSE,
     ...
@@ -162,6 +175,7 @@ lumbermark.default <- function(
         min_cluster_size=min_cluster_size,
         min_cluster_factor=min_cluster_factor,
         skip_leaves=skip_leaves,
+        nested=nested,
         verbose=verbose
     )
 }
@@ -173,10 +187,11 @@ lumbermark.default <- function(
 lumbermark.dist <- function(
     d,
     k,
-    min_cluster_size=10,
     min_cluster_factor=0.25,
-    skip_leaves=(M>0L),
     M=5L,
+    nested=TRUE,
+    skip_leaves=(M>0L),
+    min_cluster_size=10,
     verbose=FALSE,
     ...
 ) {
@@ -186,6 +201,7 @@ lumbermark.dist <- function(
         min_cluster_size=min_cluster_size,
         min_cluster_factor=min_cluster_factor,
         skip_leaves=skip_leaves,
+        nested=nested,
         verbose=verbose
     )
 }
@@ -197,9 +213,10 @@ lumbermark.dist <- function(
 lumbermark.mst <- function(
     d,
     k,
-    min_cluster_size=10,
     min_cluster_factor=0.25,
+    nested=TRUE,
     skip_leaves=TRUE,
+    min_cluster_size=10,
     verbose=FALSE,
     ...
 ) {
@@ -210,6 +227,7 @@ lumbermark.mst <- function(
     stopifnot(min_cluster_size > 0)
 
     skip_leaves <- !identical(skip_leaves, FALSE)
+    nested <- !identical(nested, FALSE)
 
     verbose <- !identical(verbose, FALSE)
 
@@ -219,6 +237,7 @@ lumbermark.mst <- function(
         min_cluster_size=min_cluster_size,
         min_cluster_factor=min_cluster_factor,
         skip_leaves=skip_leaves,
+        nested=nested,
         verbose=verbose
     )
 

@@ -35,7 +35,9 @@
  *   References
  *   ==========
  *
- *   M. Gagolewski, *Lumbermark*, in preparation, 2026, TODO
+ *   M. Gagolewski, Lumbermark: Resistant clustering by chopping up mutual
+ *   reachability minimum spanning trees, 2026,
+ *   https://doi.org/10.48550/arXiv.2604.07143
  */
 template <class FLOAT>
 class CLumbermark {
@@ -45,7 +47,7 @@ protected:
     const Py_ssize_t* mst_i;  //<! 2*m edge definitions
     Py_ssize_t m;             //<! number of edges, must be n-1
     Py_ssize_t n;             //<! number of points
-    bool skip_leaves;         //<! whether the MST leaves should be omitted from cluster counting
+    bool skip_leaves;         //<! whether the MST leaves should be omitted from cluster size counting
 
     const Py_ssize_t* cumdeg;  // length n+1; see Cgraph_vertex_incidences in 'deadwood'
     const Py_ssize_t* inc;     // length 2*m; see Cgraph_vertex_incidences in 'deadwood'
@@ -54,7 +56,7 @@ protected:
     // auxiliary data for generating clustering results:
     std::vector<Py_ssize_t> labels;        //<! node labels, size n, in 1..n_clusters and -1..-n_clusters (outliers/noise points)
     std::vector<Py_ssize_t> mst_labels;    //<! edge labels, size m
-    std::vector<Py_ssize_t> mst_cutsizes;  //<! size m, each pair gives the sizes of the clusters that are formed when we cut out the corresponding edge
+    std::vector<Py_ssize_t> mst_cutsizes;  //<! gives one of the sizes of the clusters that are formed when we cut out the corresponding edge
 
     std::vector<Py_ssize_t> cluster_sizes; //<! size n_clusters
     std::vector<Py_ssize_t> cut_edges;     //<! size n_clusters-1
@@ -95,6 +97,7 @@ protected:
         Py_ssize_t v = mst_i[2*0+0];
         labels[v] = 0;
 
+        // TODO: start with a vertex of the highest degree, many threads
         Py_ssize_t tot = 1-(skip_leaves && is_leaf(v));
         for (const Py_ssize_t* pe = inc+cumdeg[v]; pe != inc+cumdeg[v+1]; pe++) {
             tot += visit(v, *pe);
@@ -139,17 +142,24 @@ public:
     /*! Run the Lumbermark algorithm
      *
      * @param n_clusters number of clusters to find
-     * @param min_cluster_size minimal cluster size
+     *
+     * @param min_cluster_size minimal cluster size (as a safeguard for
+     *    small n_points and large n_clusters)
+     *
      * @param min_cluster_factor output cluster sizes won't be smaller than
      *    min_cluster_factor*n_points/n_clusters
-
+     *
+     * @param nested if True, generating k clusters in the (k-1)th iteration
+     *    uses the min_cluster_factor*n_points/k size bound; otherwise,
+     *    use min_cluster_factor*n_points/n_clusters.
      *
      * @return number of clusters detected (can be smaller than the requested one)
      */
     Py_ssize_t compute(
         Py_ssize_t n_clusters,
         Py_ssize_t min_cluster_size,
-        FLOAT min_cluster_factor
+        FLOAT min_cluster_factor,
+        bool nested
     ) {
         LUMBERMARK_ASSERT(n > 2);
 
@@ -162,11 +172,6 @@ public:
                 if (is_leaf(v)) n_skip++;
         }
 
-        min_cluster_size = std::max(
-            min_cluster_size,
-            (Py_ssize_t)(min_cluster_factor*(n-n_skip)/(FLOAT)n_clusters)
-        );
-
         cut_edges.resize(n_clusters-1);
         cluster_sizes.resize(n_clusters);
 
@@ -177,6 +182,11 @@ public:
 
         while (n_clusters_ < n_clusters)
         {
+            Py_ssize_t cur_min_cluster_size = std::max(
+                min_cluster_size,
+                (Py_ssize_t)(min_cluster_factor*(n-n_skip)/(FLOAT)(nested?(n_clusters_+1):n_clusters))
+            );
+
             // find the longest unconsumed edge to cut out
             do {
                 e_last--;
@@ -185,12 +195,12 @@ public:
                     return n_clusters_;  // unfortunately, that's it.
                 }
             } while (!(
-                mst_labels[e_last] >= 0 &&  // currently always true
+                mst_labels[e_last] >= 0 &&  // always true if !nested
                 !(skip_leaves && (is_leaf(mst_i[2*e_last+0]) || is_leaf(mst_i[2*e_last+1]))) &&
                 std::min(
                     mst_cutsizes[e_last],
                     cluster_sizes[mst_labels[e_last]]-mst_cutsizes[e_last]
-                ) >= min_cluster_size
+                ) >= cur_min_cluster_size
             ));
 
             cut_edges[n_clusters_-1] = e_last;
@@ -198,6 +208,7 @@ public:
             mst_cutsizes[e_last] = -1;
             n_clusters_++;
 
+            // TODO: two threads or many threads, depending on the degrees of the two vertices
             for (Py_ssize_t iv=0; iv <= 1; ++iv) {  // iv in {0,1} - go "left" and "right" along e_last
                 Py_ssize_t v = mst_i[2*e_last+iv];
 
@@ -210,6 +221,8 @@ public:
                 }
                 cluster_sizes[labels[v]] = tot;
             }
+
+            if (nested) e_last = m;  // start from the beginning
         }
 
         return n_clusters_;
